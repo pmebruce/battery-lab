@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="電池工程計算室">
+  <rect width="512" height="512" fill="#102d40"/>
+  <rect x="215" y="115" width="82" height="43" rx="13" fill="#42dac3"/>
+  <rect x="118" y="153" width="276" height="248" rx="36" fill="none" stroke="#ffffff" stroke-width="23"/>
+  <path d="M164 326l62-49 51 29 72-101" fill="none" stroke="#42dac3" stroke-width="25" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="350" cy="204" r="17" fill="#ffb55c"/>
+</svg>

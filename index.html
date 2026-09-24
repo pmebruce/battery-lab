@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#102d40">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="電池計算">
+  <meta name="description" content="電池工程常用的電芯、電池包與熱管理初估工具。">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" href="./icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png">
+  <link rel="stylesheet" href="./styles.css">
+  <title>電池工程計算室</title>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="masthead">
+      <div class="brand"><span class="brand-mark" aria-hidden="true">B<span>+</span></span><div><strong>電池工程計算室</strong><small>Battery Engineering Lab</small></div></div>
+      <span class="header-tag">概念設計 · 熱管理</span>
+    </header>
+    <div class="workspace">
+      <aside class="sidebar" aria-label="計算工具">
+        <div class="sidebar-heading"><span>計算工具</span><span id="tool-count"></span></div>
+        <nav id="nav" class="nav-list"></nav>
+        <p class="sidebar-note">所有計算都在本機瀏覽器完成。數值為初估，請以實際電芯資料與量測驗證。</p>
+      </aside>
+      <main class="main-content" id="main">
+        <section class="tool-finder" aria-labelledby="finder-heading">
+          <div class="finder-heading"><div><h2 id="finder-heading">快速找工具</h2><p>先選用途，或輸入關鍵字</p></div><span id="finder-count" aria-live="polite"></span></div>
+          <label class="sr-only" for="tool-search">搜尋計算工具</label>
+          <input id="tool-search" type="search" placeholder="搜尋：DCIR、冷量、容量、電阻…" autocomplete="off">
+          <div id="finder-filters" class="finder-filters" aria-label="工具用途"></div>
+          <div id="finder-results" class="finder-results"></div>
+        </section>
+        <div class="tool-heading"><div><p class="eyebrow" id="category"></p><h1 id="tool-title"></h1><p class="tool-description" id="tool-description"></p></div><span class="tool-index" id="tool-index"></span></div>
+        <div class="calculator-grid">
+          <section class="panel inputs-panel" aria-labelledby="inputs-heading"><div class="panel-heading"><h2 id="inputs-heading">輸入條件</h2><span>修改後即時計算</span></div><form id="input-form" autocomplete="off"></form></section>
+          <section class="panel results-panel" aria-labelledby="results-heading"><div class="panel-heading"><h2 id="results-heading">估算結果</h2><span id="result-status">即時計算</span></div><div id="results" aria-live="polite"></div></section>
+        </div>
+        <section class="chart-panel" id="charts" aria-label="放電期間趨勢圖" hidden></section>
+        <section class="method-panel" aria-labelledby="method-heading"><div class="method-head"><h2 id="method-heading">計算式與使用邊界</h2></div><div id="method"></div></section>
+        <footer>數值僅供工程初估 · 電池工程計算室</footer>
+      </main>
+    </div>
+  </div>
+  <script src="./app.js" defer></script>
+</body>
+</html>
