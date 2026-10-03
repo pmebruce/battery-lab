@@ -1,4 +1,4 @@
-const CACHE = 'battery-lab-github-v9-type1';
+const CACHE = 'battery-lab-github-v9-type2';
 const ASSETS = ['./', './index.html', './styles.css?v=9', './app.js', './manifest.webmanifest', './icons/icon-192.png?v=7', './icons/icon-512.png?v=7', './apple-touch-icon.png?v=7'];
 self.addEventListener('install', event => { event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(ASSETS)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', event => { event.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(key => key.startsWith('battery-lab-') && key !== CACHE).map(key => caches.delete(key)))).then(() => self.clients.claim())); });
