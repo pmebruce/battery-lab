@@ -274,7 +274,12 @@ function renderFinder(){
 }
 
 function renderMethod(tool){
-  const formula=tool.id==='hvac-sizing'&&activeLoadProfile?tool.formula.replace('平均發熱 Q̄[W] = (起始發熱 + 結束發熱) ÷ 2；總熱量 E[kJ] = Q̄[W] × 放電時間[分鐘] × 60 ÷ 1000','時序發熱 Q(t)[W] = 電芯數 × [功率(t) × 1000 ÷ (並聯路徑數 × 電壓(t))]² × R；總熱量 E[kJ] = ∫ Q(t) dt ÷ 1000；平均發熱 Q̄[W] = E[J] ÷ 放電秒數'):tool.formula;
+  const dynamic=tool.id==='hvac-sizing'&&activeLoadProfile;
+  const formula=dynamic?tool.formula
+    .replace('額定放電倍率[C] = 單櫃輸出功率[kW] ÷ 單櫃額定能量[kWh]','峰值額定放電倍率[C] = 時序峰值功率[kW] ÷ 單櫃額定能量[kWh]')
+    .replace('單顆電流 I[A] = 單櫃輸出功率[kW] × 1000 ÷ (並聯路徑數 × 負載電壓[V])','單顆電流 I(t)[A] = 時序功率(t)[kW] × 1000 ÷ (並聯路徑數 × 電壓(t)[V])')
+    .replace('平均發熱 Q̄[W] = (起始發熱 + 結束發熱) ÷ 2；總熱量 E[kJ] = Q̄[W] × 放電時間[分鐘] × 60 ÷ 1000','時序發熱 Q(t)[W] = 電芯數 × I(t)² × R；總熱量 E[kJ] = ∫ Q(t) dt ÷ 1000；平均發熱 Q̄[W] = E[J] ÷ 放電秒數')
+    .replace('絕熱溫度 T(t) = 起始溫度 + [Q起始 × t + (Q結束 − Q起始) × t² ÷ (2 × 放電秒數)] ÷ (電芯數 × 重量 × 比熱)','絕熱溫度 T(t) = 起始溫度 + ∫₀ᵗ Q(τ) dτ ÷ (電芯數 × 重量 × 比熱)'):tool.formula;
   const parts=formula.split(/[；。]/).map(part=>part.trim()).filter(Boolean);
   const equations=parts.filter(part=>/[=≈]/.test(part));
   const notes=parts.filter(part=>!/[=≈]/.test(part));
@@ -282,8 +287,9 @@ function renderMethod(tool){
     const [,label,operator,expression]=part.match(/^(.+?)\s*([=≈])\s*(.+)$/);
     return `<div class="equation-row"><span class="equation-label">${label.trim()}</span><span class="equation-expression"><b>${operator}</b> ${expression}</span></div>`;
   }).join('');
-  const dynamicNote=tool.id==='hvac-sizing'&&activeLoadProfile?'時序模式在相鄰輸入點之間線性插值功率，起始到結束電壓也依時間線性插值；不依 SoC 或電流回算電壓，亦不模擬保護截止。時序能量由積分求得，原試算表的端點梯形公式僅適用定功率模式。':'';
-  byId('method').innerHTML=`<div class="method-layout"><div class="equations"><h3>計算公式</h3><div class="equation-list">${rows}</div>${notes.map(note=>`<p class="unit-note">${note}</p>`).join('')}</div><aside class="boundary"><h3>使用邊界</h3><p>${tool.caution} ${dynamicNote}</p>${tool.source?`<p class="source">參考資料：<a href="${tool.source[1]}" target="_blank" rel="noopener noreferrer">${tool.source[0]}</a></p>`:''}</aside></div>`;
+  const dynamicNote=dynamic?'時序模式在相鄰輸入點之間線性插值功率，起始到結束電壓也依時間線性插值；不依 SoC 或電流回算電壓，亦不模擬保護截止。時序能量由積分求得，原試算表的端點梯形公式僅適用定功率模式。':'';
+  const caution=dynamic?tool.caution.replace('損失曲線是假設兩端點發熱之間線性變化的 I²R 電池損失。','損失曲線由每個時刻的時序功率與線性插值電壓推得 I²R 損失。'):tool.caution;
+  byId('method').innerHTML=`<div class="method-layout"><div class="equations"><h3>計算公式</h3><div class="equation-list">${rows}</div>${notes.map(note=>`<p class="unit-note">${note}</p>`).join('')}</div><aside class="boundary"><h3>使用邊界</h3><p>${caution} ${dynamicNote}</p>${tool.source?`<p class="source">參考資料：<a href="${tool.source[1]}" target="_blank" rel="noopener noreferrer">${tool.source[0]}</a></p>`:''}</aside></div>`;
 }
 function renderField(tool,f){
   const eolOnly=tool.id==='hvac-sizing'&&['eolResistance','eolCapacity'].includes(f.key);
