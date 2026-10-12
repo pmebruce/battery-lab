@@ -156,3 +156,25 @@ footer{font-size:.96rem}
   .equation-expression{font-size:1.13rem}
   .chart-section-title{flex-wrap:wrap}
 }
+
+/* Scenario comparison stays in the existing discharge chart panel. */
+.scenario-controls{display:flex;align-items:center;justify-content:space-between;gap:15px;margin:18px 0 12px}
+.scenario-controls p{margin:0;color:#577381;font-size:1rem;line-height:1.55}
+.scenario-controls button,.scenario-row button{border:1px solid #0d7776;background:#087c79;color:#fff;border-radius:9px;padding:10px 15px;font-size:1rem;font-weight:750;white-space:nowrap}
+.scenario-controls button:disabled{background:#e8eff0;border-color:#c9d8dc;color:#77919a;cursor:not-allowed}
+.scenario-controls button:focus-visible,.scenario-row button:focus-visible{outline:3px solid #38b9aa;outline-offset:2px}
+.scenario-list{display:grid;gap:8px;margin-bottom:20px}
+.scenario-row{display:flex;align-items:center;gap:12px;padding:11px 13px;border:1px solid #d9e7ea;border-radius:9px;background:#f7fbfb;min-width:0}
+.scenario-row.current{background:#ecf8f6;border-color:#b9ddda}
+.scenario-swatch{display:block;width:13px;height:34px;background:var(--line-color);border-radius:5px;flex:none}
+.scenario-row>div{display:grid;gap:2px;min-width:0;flex:1}
+.scenario-row strong{font-size:1.08rem;color:#24495a}
+.scenario-row small{font-size:.95rem;color:#526e7b;line-height:1.4;overflow-wrap:anywhere}
+.scenario-row div span{font-size:.94rem;color:#345a67}
+.scenario-row button{background:#fff;color:#466572;border-color:#cedde1;padding:8px 12px}
+.chart-legend{display:flex;flex-wrap:wrap;gap:8px 15px;margin:12px 0 3px;color:#496777;font-size:.91rem;line-height:1.4}
+.chart-legend span{display:inline-flex;align-items:center;gap:6px}
+.chart-legend i{display:inline-block;width:24px;border-top:3px solid var(--line-color)}
+.chart-legend i.dashed{border-top-style:dashed}
+@media(max-width:650px){.scenario-controls{display:block}.scenario-controls button{margin-top:12px;width:100%}.scenario-row{align-items:flex-start}.scenario-row button{align-self:center}.chart-legend{font-size:.87rem}}
+

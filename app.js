@@ -49,12 +49,16 @@ const tools = [
       n('放電時允許平均溫升','allowRise',10,'°C',0,200),
       n('其他連續熱負載','otherHeat',0,'W',0,100000000),
       n('額定冷量可用比例','available',100,'%',0.001,100,'any','例如高環溫或風道損失使實際可用冷量下降'),
-      n('設計裕量','margin',0,'%',0,500)
+      n('設計裕量','margin',0,'%',0,500),
+      n('已配置空調標稱冷量','installedCooling',5,'kW',0,100000,'any','用於有冷卻溫度曲線，不會改變上方所需冷量的反推結果'),
+      n('冷卻介質溫度','ambientTemp',25,'°C',-40,150,'any','假設送風或冷卻液溫度在放電期間維持不變'),
+      n('電芯至冷卻介質總熱導 UA','thermalUA',700,'W/K',0,100000000,'any','整櫃所有電芯的等效值；需由量測或熱模型校準')
     ],sections:[
       ['電池櫃配置',['groupsPerCabinet','stringsPerGroup','series','cellParallel','cellAh','cellNominalV']],
       ['放電條件',['power','duration','voltageStart','voltageEnd']],
       ['電芯與壽命',['dcir','life','eolResistance','eolCapacity','mass','cp','initialTemp']],
-      ['空調設計',['recovery','allowRise','otherHeat','available','margin']]
+      ['空調設計',['recovery','allowRise','otherHeat','available','margin']],
+      ['有冷卻溫度曲線',['installedCooling','ambientTemp','thermalUA']]
     ],validate:v=>v.voltageStart>=v.voltageEnd?'':'結束電壓須小於或等於起始電壓。',calc:v=>{
       const parallel=v.cellParallel*v.stringsPerGroup*v.groupsPerCabinet;
       const cellCount=v.series*parallel;
@@ -77,16 +81,37 @@ const tools = [
       const usableEnergy=bankEnergy*(v.life==='eol'?v.eolCapacity/100:1);
       const stringCount=v.stringsPerGroup*v.groupsPerCabinet;
       const durationSeconds=v.duration*60;
+      const usableCooling=Math.max(0,v.installedCooling*1000*v.available/100-v.otherHeat);
+      let cooledTemperature=v.initialTemp;
+      let removedEnergy=0;
       const profile=Array.from({length:49},(_,index)=>{
         const fraction=index/48;
         const seconds=durationSeconds*fraction;
         const heat=heatStart+(heatEnd-heatStart)*fraction;
         const joules=heatStart*seconds+(heatEnd-heatStart)*seconds*fraction/2;
-        return {time:v.duration*fraction,temperature:v.initialTemp+joules/heatCapacity,loss:heat/stringCount};
+        if(index){
+          const dt=durationSeconds/(48*20);
+          for(let substep=0;substep<20;substep++){
+            const midFraction=(index-1+(substep+.5)/20)/48;
+            const inputHeat=heatStart+(heatEnd-heatStart)*midFraction;
+            const potential=v.thermalUA*(cooledTemperature-v.ambientTemp);
+            if(v.thermalUA>0&&potential<usableCooling){
+              const decay=Math.exp(-v.thermalUA*dt/heatCapacity);
+              const next=v.ambientTemp+(cooledTemperature-v.ambientTemp)*decay+(inputHeat/v.thermalUA)*(1-decay);
+              removedEnergy+=inputHeat*dt-(next-cooledTemperature)*heatCapacity;
+              cooledTemperature=next;
+            }else{
+              cooledTemperature+=(inputHeat-usableCooling)*dt/heatCapacity;
+              removedEnergy+=usableCooling*dt;
+            }
+          }
+        }
+        return {time:v.duration*fraction,temperature:v.initialTemp+joules/heatCapacity,cooledTemperature,loss:heat/stringCount};
       });
       const warnings=[];
       if(pulseNominal>recoveryNominal+0.01)warnings.push(`單靠 ${round(v.recovery,1)} 小時回冷冷量，不能保證放電期間的平均溫升不超過 ${round(v.allowRise,1)} °C；限溫情境至少需 ${round(pulseNominal/1000,2)} kW 標稱冷量。`);
       if(v.power*v.duration/60>usableEnergy)warnings.push('輸出電量超過估算可用能量，請核對功率、時間、EOL 容量保留率及可用 SoC。');
+      if(profile.at(-1).cooledTemperature>v.initialTemp+v.allowRise)warnings.push(`已配置 ${round(v.installedCooling,2)} kW 標稱冷量的估算末溫為 ${round(profile.at(-1).cooledTemperature,1)} °C，超過設定的平均溫升限制。`);
       return {results:[
         item('回冷情境空調標稱冷量',recoveryNominal/1000,'kW',true),
         item('同等空調冷量',recoveryNominal*3.412141633,'BTU/hr'),
@@ -103,9 +128,11 @@ const tools = [
         ...(v.life==='eol'?[item('EOL 容量檢查值',usableEnergy,'kWh')]:[]),
         item('絕熱平均溫升',energy/heatCapacity,'°C'),
         item('無冷卻末端平均溫度',v.initialTemp+energy/heatCapacity,'°C'),
+        item('有冷卻末端平均溫度',profile.at(-1).cooledTemperature,'°C'),
+        item('放電期間由電芯移走的熱量',removedEnergy/1000,'kJ'),
         item('額定放電倍率',v.power/bankEnergy,'C')
       ],charts:{profile,temperatureLimit:v.initialTemp+v.allowRise,lossStart:heatStart/stringCount,lossEnd:heatEnd/stringCount},warning:warnings.join(' ')};
-    },formula:'並聯路徑數 = P × 每組串數 × 每櫃組數；電芯數 = S × 並聯路徑數；單櫃額定能量[kWh] = 電芯數 × 單顆額定容量[Ah] × 單顆額定電壓[V] ÷ 1000；額定放電倍率[C] = 單櫃輸出功率[kW] ÷ 單櫃額定能量[kWh]；EOL 容量檢查值 = 額定能量 × EOL 容量保留率；單顆電流 I[A] = 單櫃輸出功率[kW] × 1000 ÷ (並聯路徑數 × 負載電壓[V])；有效電阻 R[Ω] = DCIR[mΩ] ÷ 1000 × 壽命倍率；起始與結束發熱 Q[W] = 電芯數 × I² × R；平均發熱 Q̄[W] = (起始發熱 + 結束發熱) ÷ 2；總熱量 E[kJ] = Q̄[W] × 放電時間[分鐘] × 60 ÷ 1000；每串損失[W] = 單櫃發熱[W] ÷ (每組串數 × 每櫃組數)；絕熱溫度 T(t) = 起始溫度 + [Q起始 × t + (Q結束 − Q起始) × t² ÷ (2 × 放電秒數)] ÷ (電芯數 × 重量 × 比熱)；回冷平均負載[W] = E[kJ] × 1000 ÷ 回冷時間[秒]；回冷標稱冷量[W] = (回冷平均負載 + 其他熱負載) × (1 + 裕量比例) ÷ 可用冷量比例；放電限溫負載[W] = max(0, [E[J] − 電芯數 × 重量 × 比熱 × 容許溫升] ÷ 放電秒數) + 其他熱負載。標稱值同樣套用裕量與可用冷量比例。',caution:'額定能量由額定 Ah 與額定 V 推算，不代表這次放電能取出的電量；EOL 容量檢查值未扣除可用 SoC 窗口。溫度曲線是無冷卻的電芯平均溫度，損失曲線是假設兩端點發熱之間線性變化的 I²R 電池損失。照片所見 13,863.74 W、25,000 W、9 分鐘代入會得 10,493.2 kJ，與畫面顯示的 11,015.9 kJ 不同，請核對放電時間是否有隱藏小數或重新計算 Excel。回冷與放電限溫是不同情境；本估算不含可逆熱、極耳、匯流排、逆變器及機櫃進熱。平均溫度不代表最高芯溫。BTU/hr 是冷量，不是耗電功率。'
+    },formula:'並聯路徑數 = P × 每組串數 × 每櫃組數；電芯數 = S × 並聯路徑數；單櫃額定能量[kWh] = 電芯數 × 單顆額定容量[Ah] × 單顆額定電壓[V] ÷ 1000；額定放電倍率[C] = 單櫃輸出功率[kW] ÷ 單櫃額定能量[kWh]；EOL 容量檢查值 = 額定能量 × EOL 容量保留率；單顆電流 I[A] = 單櫃輸出功率[kW] × 1000 ÷ (並聯路徑數 × 負載電壓[V])；有效電阻 R[Ω] = DCIR[mΩ] ÷ 1000 × 壽命倍率；起始與結束發熱 Q[W] = 電芯數 × I² × R；平均發熱 Q̄[W] = (起始發熱 + 結束發熱) ÷ 2；總熱量 E[kJ] = Q̄[W] × 放電時間[分鐘] × 60 ÷ 1000；每串損失[W] = 單櫃發熱[W] ÷ (每組串數 × 每櫃組數)；絕熱溫度 T(t) = 起始溫度 + [Q起始 × t + (Q結束 − Q起始) × t² ÷ (2 × 放電秒數)] ÷ (電芯數 × 重量 × 比熱)；有冷卻溫度 C × dT/dt = Q電芯 − min(空調可供電芯冷量, UA × (T − 冷卻介質溫度))；空調可供電芯冷量 = max(0, 已配置標稱冷量 × 可用比例 − 其他連續熱負載)；回冷平均負載[W] = E[kJ] × 1000 ÷ 回冷時間[秒]；回冷標稱冷量[W] = (回冷平均負載 + 其他熱負載) × (1 + 裕量比例) ÷ 可用冷量比例；放電限溫負載[W] = max(0, [E[J] − 電芯數 × 重量 × 比熱 × 容許溫升] ÷ 放電秒數) + 其他熱負載。標稱值同樣套用裕量與可用冷量比例。',caution:'額定能量由額定 Ah 與額定 V 推算，不代表這次放電能取出的電量；EOL 容量檢查值未扣除可用 SoC 窗口。橘線是無冷卻的平均溫度；有冷卻線採單一熱容與整櫃等效 UA，假設冷卻介質溫度及可用冷量固定，且其他連續負載優先占用空調冷量。UA 必須用量測或熱模型校準；無法從空調標稱冷量直接推知。損失曲線是假設兩端點發熱之間線性變化的 I²R 電池損失。照片所見 13,863.74 W、25,000 W、9 分鐘代入會得 10,493.2 kJ，與畫面顯示的 11,015.9 kJ 不同，請核對放電時間是否有隱藏小數或重新計算 Excel。回冷與放電限溫是不同情境；本估算不含可逆熱、極耳、匯流排、逆變器及機櫃進熱。平均溫度不代表最高芯溫。BTU/hr 是冷量，不是耗電功率。'
   },
   {
     id:'cell-energy',group:'電芯',title:'電芯能量密度',description:'由額定電壓、容量、重量與外形體積求電芯能量密度。',fields:[
@@ -175,6 +202,17 @@ const searchAliases = {
 };
 let finderGroup='常用';
 let active = null;
+const scenarioKey='battery-lab-hvac-scenarios-v1';
+const hvacTool=tools.find(tool=>tool.id==='hvac-sizing');
+function validScenario(value){
+  return value&&typeof value==='object'&&hvacTool.fields.every(field=>field.options?field.options.some(([option])=>option===value[field.key]):typeof value[field.key]==='number'&&Number.isFinite(value[field.key])&&value[field.key]>=field.min&&value[field.key]<=field.max&&(field.step!==1||Number.isInteger(value[field.key])));
+}
+function loadScenarios(){
+  try{const saved=JSON.parse(localStorage.getItem(scenarioKey)||'[]');return Array.isArray(saved)?saved.slice(0,3).filter(validScenario):[];}catch{return [];}
+}
+let scenarios=loadScenarios();
+function saveScenarios(){try{localStorage.setItem(scenarioKey,JSON.stringify(scenarios));}catch{/* Private browsing can deny storage. */}}
+function scenarioLabel(v){return `${v.life.toUpperCase()} · ${round(v.power,0)} kW / ${round(v.duration,1)} 分 · ${round(v.groupsPerCabinet,0)} 組/櫃 · 冷量 ${round(v.installedCooling,1)} kW`;}
 
 function renderFinder(){
   const query=byId('tool-search').value.trim().toLocaleLowerCase();
@@ -208,35 +246,50 @@ function renderFields(tool){
   const byKey=Object.fromEntries(tool.fields.map(f=>[f.key,f]));
   return tool.sections.map(([title,keys])=>`<div class="input-section"><h3>${title}</h3><div class="field-grid">${keys.map(key=>renderField(tool,byKey[key])).join('')}</div></div>`).join('');
 }
-function lineChart(points,key,{color,unit,zeroBase=false,limit=null}){
+function lineChart(series,{unit,zeroBase=false,limit=null}){
   const width=520,height=300,left=67,right=18,top=18,bottom=54;
   const plotWidth=width-left-right,plotHeight=height-top-bottom;
-  const values=points.map(point=>point[key]);
+  const values=series.flatMap(line=>line.points.map(point=>point[line.key]));
+  const maxTime=Math.max(...series.map(line=>line.points.at(-1).time));
   const minValue=Math.min(...values,...(limit===null?[]:[limit]));
   const maxValue=Math.max(...values,...(limit===null?[]:[limit]));
   const pad=Math.max((maxValue-minValue)*0.12,unit==='°C'?1:100);
   const lower=zeroBase?0:minValue-pad,upper=maxValue+pad;
   const rough=(upper-lower)/4,base=10**Math.floor(Math.log10(rough));
-  const step=[1,2,5,10].find(factor=>factor*base>=rough)*base;
+  const step=([1,2,5,10].find(factor=>factor*base>=rough)||10)*base;
   const yMin=zeroBase?0:Math.floor(lower/step)*step;
-  const yMax=Math.ceil(upper/step)*step;
-  const xAt=index=>left+plotWidth*index/(points.length-1);
+  const yMax=Math.max(yMin+step,Math.ceil(upper/step)*step);
+  const xAt=time=>left+plotWidth*time/maxTime;
   const yAt=value=>top+plotHeight*(yMax-value)/(yMax-yMin);
   const yTicks=[];
   for(let value=yMin;value<=yMax+step/10;value+=step)yTicks.push(value);
   const horizontal=yTicks.map(value=>`<line x1="${left}" x2="${width-right}" y1="${yAt(value)}" y2="${yAt(value)}" class="chart-gridline"/><text x="${left-11}" y="${yAt(value)+5}" text-anchor="end" class="chart-tick">${round(value,unit==='°C'?1:0)}</text>`).join('');
-  const vertical=[0,.25,.5,.75,1].map(fraction=>{const x=left+plotWidth*fraction;return `<line x1="${x}" x2="${x}" y1="${top}" y2="${height-bottom}" class="chart-gridline"/><text x="${x}" y="${height-bottom+23}" text-anchor="middle" class="chart-tick">${round(points.at(-1).time*fraction,1)}</text>`}).join('');
-  const path=points.map((point,index)=>`${index?'L':'M'}${xAt(index).toFixed(2)} ${yAt(point[key]).toFixed(2)}`).join(' ');
+  const vertical=[0,.25,.5,.75,1].map(fraction=>{const x=left+plotWidth*fraction;return `<line x1="${x}" x2="${x}" y1="${top}" y2="${height-bottom}" class="chart-gridline"/><text x="${x}" y="${height-bottom+23}" text-anchor="middle" class="chart-tick">${round(maxTime*fraction,1)}</text>`}).join('');
   const limitLine=limit===null?'':`<line x1="${left}" x2="${width-right}" y1="${yAt(limit)}" y2="${yAt(limit)}" class="chart-limit"/><text x="${width-right-4}" y="${yAt(limit)-7}" text-anchor="end" class="chart-limit-label">允許平均溫度</text>`;
-  return `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${unit} 對放電時間的趨勢，起始 ${round(values[0],1)}，末端 ${round(values.at(-1),1)}"><g>${horizontal}${vertical}</g><text x="${left}" y="${top-4}" class="chart-axis-unit">${unit}</text>${limitLine}<path d="${path}" fill="none" stroke="${color}" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="${xAt(0)}" cy="${yAt(values[0])}" r="5" fill="${color}"/><circle cx="${xAt(points.length-1)}" cy="${yAt(values.at(-1))}" r="5" fill="${color}"/><text x="${left+plotWidth/2}" y="${height-9}" text-anchor="middle" class="chart-axis-label">放電時間（分鐘）</text></svg>`;
+  const paths=series.map(({points,key,color,dashed})=>{
+    const path=points.map((point,index)=>`${index?'L':'M'}${xAt(point.time).toFixed(2)} ${yAt(point[key]).toFixed(2)}`).join(' ');
+    const end=points.at(-1);
+    return `<path d="${path}" fill="none" stroke="${color}" stroke-width="${dashed?2.5:3.5}" ${dashed?'stroke-dasharray="7 5"':''} stroke-linecap="round" stroke-linejoin="round"/><circle cx="${xAt(end.time)}" cy="${yAt(end[key])}" r="4.5" fill="${color}"/>`;
+  }).join('');
+  const description=series.map(line=>`${line.label} 末端 ${round(line.points.at(-1)[line.key],1)} ${unit}`).join('；');
+  return `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${description}"><g>${horizontal}${vertical}</g><text x="${left}" y="${top-4}" class="chart-axis-unit">${unit}</text>${limitLine}${paths}<text x="${left+plotWidth/2}" y="${height-9}" text-anchor="middle" class="chart-axis-label">放電時間（分鐘）</text></svg>`;
 }
+const scenarioColors=['#6255aa','#b46329','#567a20'];
+function chartLegend(lines){return `<div class="chart-legend">${lines.map(line=>`<span><i style="--line-color:${line.color}" class="${line.dashed?'dashed':''}"></i>${line.label}</span>`).join('')}</div>`;}
 function renderCharts(charts){
   const container=byId('charts');
   if(!charts){container.hidden=true;container.innerHTML='';return;}
   const {profile,temperatureLimit,lossStart,lossEnd}=charts;
   const end=profile.at(-1);
+  const comparisons=scenarios.map((values,index)=>({values,index,charts:hvacTool.calc(values).charts}));
+  const temperatureLines=[{label:'目前：有冷卻',points:profile,key:'cooledTemperature',color:'#087c89'},
+    {label:'目前：無冷卻',points:profile,key:'temperature',color:'#d57838',dashed:true},
+    ...comparisons.map(({index,charts:old})=>({label:`情境 ${index+1}：有冷卻`,points:old.profile,key:'cooledTemperature',color:scenarioColors[index]}))];
+  const lossLines=[{label:'目前',points:profile,key:'loss',color:'#087c89'},
+    ...comparisons.map(({index,charts:old})=>({label:`情境 ${index+1}`,points:old.profile,key:'loss',color:scenarioColors[index]}))];
+  const rows=comparisons.map(({values,index,charts:old})=>`<div class="scenario-row"><span class="scenario-swatch" style="--line-color:${scenarioColors[index]}"></span><div><strong>情境 ${index+1}</strong><small>${scenarioLabel(values)}</small><span>有冷卻末溫 ${round(old.profile.at(-1).cooledTemperature,1)} °C · 每串末端 loss ${round(old.lossEnd/1000,2)} kW</span></div><button type="button" data-remove-scenario="${index}" aria-label="移除情境 ${index+1}">移除</button></div>`).join('');
   container.hidden=false;
-  container.innerHTML=`<div class="chart-section-title"><h2>放電過程曲線</h2><span>${round(end.time,2)} 分鐘</span></div><div class="chart-grid"><article class="chart-card"><div class="chart-card-head"><h3>電芯平均溫度</h3><strong>${round(end.temperature,1)} °C</strong></div><div class="chart-scroll">${lineChart(profile,'temperature',{color:'#d57838',unit:'°C',limit:temperatureLimit})}</div><p>起始溫度 ${round(profile[0].temperature,1)} °C；虛線是允許的平均溫度。曲線以無冷卻、電芯等溫估算。</p></article><article class="chart-card"><div class="chart-card-head"><h3>每串功率損失</h3><strong>${round(lossEnd/1000,2)} kW</strong></div><div class="chart-scroll">${lineChart(profile,'loss',{color:'#087c89',unit:'W',zeroBase:true})}</div><p>起始 ${round(lossStart/1000,2)} kW → 結束 ${round(lossEnd/1000,2)} kW。這裡的損失是每串電芯 I²R 發熱。</p></article></div>`;
+  container.innerHTML=`<div class="chart-section-title"><h2>放電過程曲線與情境比較</h2><span>目前 ${round(end.time,2)} 分鐘</span></div><div class="scenario-controls"><p>調整上方條件後，按「儲存目前情境」即可與下一組參數比較；最多保留 3 組於此瀏覽器。</p><button type="button" data-save-scenario ${scenarios.length>=3?'disabled':''}>儲存目前情境</button></div><div class="scenario-list"><div class="scenario-row current"><span class="scenario-swatch" style="--line-color:#087c89"></span><div><strong>目前條件</strong><small>${scenarioLabel(state['hvac-sizing'])}</small><span>有冷卻末溫 ${round(end.cooledTemperature,1)} °C · 每串末端 loss ${round(lossEnd/1000,2)} kW</span></div></div>${rows}</div><div class="chart-grid"><article class="chart-card"><div class="chart-card-head"><h3>電芯平均溫度</h3><strong>有冷卻 ${round(end.cooledTemperature,1)} °C</strong></div>${chartLegend(temperatureLines)}<div class="chart-scroll">${lineChart(temperatureLines,{unit:'°C',limit:temperatureLimit})}</div><p>橘色虛線為目前條件的無冷卻溫度；橫向虛線為目前設定的平均溫度上限。比較情境若修改起始溫度或容許溫升，仍以目前上限作參考。</p></article><article class="chart-card"><div class="chart-card-head"><h3>每串功率損失</h3><strong>目前 ${round(lossEnd/1000,2)} kW</strong></div>${chartLegend(lossLines)}<div class="chart-scroll">${lineChart(lossLines,{unit:'W',zeroBase:true})}</div><p>目前起始 ${round(lossStart/1000,2)} kW → 結束 ${round(lossEnd/1000,2)} kW。不同配置的每串定義會依各情境的串數計算。</p></article></div>`;
 }
 
 function makeNav(){
@@ -247,6 +300,15 @@ function makeNav(){
   byId('finder-filters').addEventListener('click',e=>{const button=e.target.closest('[data-finder-group]');if(!button)return;finderGroup=button.dataset.finderGroup;renderFinder()});
   byId('input-form').addEventListener('input',update);
   byId('input-form').addEventListener('change',update);
+  byId('charts').addEventListener('click',event=>{
+    if(active.id!=='hvac-sizing')return;
+    if(event.target.closest('[data-save-scenario]')){
+      if(scenarios.length<3){scenarios.push({...state['hvac-sizing']});saveScenarios();update();}
+      return;
+    }
+    const remove=event.target.closest('[data-remove-scenario]');
+    if(remove){scenarios.splice(Number(remove.dataset.removeScenario),1);saveScenarios();update();}
+  });
 }
 function render(){
   let id=decodeURIComponent(location.hash.slice(1));let tool=tools.find(t=>t.id===id)||tools[0];
