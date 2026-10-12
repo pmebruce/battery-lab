@@ -83,14 +83,20 @@ const tools = [
       };
       let cooledTemperature=v.initialTemp,peakCooledTemperature=v.initialTemp;
       let removedEnergy=0,energy=0,outputEnergy=0,peakHeat=0;
+      if(load)for(const row of load)peakHeat=Math.max(peakHeat,heatAt(row.time));
       const profile=Array.from({length:49},(_,index)=>{
         const fraction=index/48;
         const heat=heatAt(v.duration*fraction);
         peakHeat=Math.max(peakHeat,heat);
         if(index){
-          const dt=durationSeconds/(48*20);
-          for(let substep=0;substep<20;substep++){
-            const midTime=v.duration*(index-1+(substep+.5)/20)/48;
+          const from=v.duration*(index-1)/48,to=v.duration*index/48;
+          const times=Array.from({length:21},(_,step)=>from+(to-from)*step/20);
+          if(load)for(const row of load)if(row.time>from&&row.time<to)times.push(row.time);
+          times.sort((a,b)=>a-b);
+          const integrationTimes=load?times.flatMap((time,step)=>step===times.length-1?[time]:[time,time+(times[step+1]-time)/4,time+(times[step+1]-time)/2,time+3*(times[step+1]-time)/4]):times;
+          for(let substep=1;substep<integrationTimes.length;substep++){
+            const dt=(integrationTimes[substep]-integrationTimes[substep-1])*60;
+            const midTime=(integrationTimes[substep-1]+integrationTimes[substep])/2;
             const inputHeat=heatAt(midTime);
             peakHeat=Math.max(peakHeat,inputHeat);
             energy+=inputHeat*dt;
@@ -112,6 +118,7 @@ const tools = [
       });
       // Preserve the spreadsheet's exact endpoint trapezoid in fixed-power mode.
       if(!load){energy=(heatStart+heatEnd)/2*durationSeconds;outputEnergy=v.power*v.duration/60;}
+      else outputEnergy=load.slice(1).reduce((sum,row,index)=>sum+(row.power+load[index].power)/2*(row.time-load[index].time)/60,0);
       const heatAverage=energy/durationSeconds;
       const recoveryLoad=energy/(v.recovery*3600);
       const coolingFactor=(1+v.margin/100)/(v.available/100);
