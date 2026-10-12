@@ -10,7 +10,7 @@
   <link rel="manifest" href="./manifest.webmanifest">
   <link rel="icon" href="./icons/icon-192.png?v=7" type="image/png">
   <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png?v=7">
-  <link rel="stylesheet" href="./styles.css?v=11">
+  <link rel="stylesheet" href="./styles.css?v=12">
   <title>電池工程計算室</title>
 <style id="tool-hero-layout-v1">
 .tool-hero{max-width:1220px;margin:0 auto;padding:24px 26px 28px;color:var(--ink,#18314b);background:transparent}
@@ -60,6 +60,21 @@ header.tool-hero h1{font-size:25px!important}
           <div id="finder-results" class="finder-results"></div>
         </section>
         <div class="tool-heading"><div><p class="eyebrow" id="category"></p><h1 id="tool-title"></h1><p class="tool-description" id="tool-description"></p></div><span class="tool-index" id="tool-index"></span></div>
+        <section class="workflow-panel" id="workflow-panel" aria-label="負載與電芯資料" hidden>
+          <details id="load-profile-details"><summary>負載時序 CSV <span id="profile-badge">定功率模式</span></summary>
+            <div class="workflow-body"><p>兩欄：<strong>time_min,power_kw</strong>，從 0 分鐘開始、時間遞增；相鄰點間功率線性插值。套用後會用最後時間與最大功率更新上方欄位。</p>
+              <label for="profile-file">選擇 CSV 檔案</label><input id="profile-file" type="file" accept=".csv,text/csv,text/plain">
+              <label for="profile-text">或貼上時序資料</label><textarea id="profile-text" rows="5" spellcheck="false" placeholder="time_min,power_kw&#10;0,300&#10;4,300&#10;9,180"></textarea>
+              <div class="workflow-actions"><button type="button" id="apply-profile">套用時序</button><button type="button" id="clear-profile" class="secondary">恢復定功率</button></div><p id="profile-status" class="workflow-status" role="status">目前使用定功率放電。</p>
+            </div>
+          </details>
+          <details id="cell-library-details"><summary>我的電芯資料卡 <span id="cell-count">0 張</span></summary>
+            <div class="workflow-body"><p>儲存上方的單顆額定容量、電壓、BOL DCIR、重量與比熱；記下 DCIR 的量測條件，再一鍵套用。資料僅儲存在此瀏覽器。</p>
+              <div class="cell-card-fields"><div><label for="cell-name">電芯名稱</label><input id="cell-name" maxlength="80" placeholder="例如：測試樣品 A"></div><div><label for="cell-source">資料來源</label><input id="cell-source" maxlength="120" placeholder="例如：供應商 datasheet / 自行量測"></div><div><label for="cell-soc">DCIR 量測 SoC (%)</label><input id="cell-soc" type="number" min="0" max="100" step="any" value="50"></div><div><label for="cell-temp">量測溫度 (°C)</label><input id="cell-temp" type="number" min="-70" max="150" step="any" value="25"></div><div><label for="cell-pulse">DCIR 脈衝時間 (s)</label><input id="cell-pulse" type="number" min="0.001" max="100000" step="any" value="10"></div></div>
+              <div class="workflow-actions"><button type="button" id="save-cell">儲存目前電芯</button></div><p id="cell-status" class="workflow-status" role="status"></p><div id="cell-list" class="cell-list"></div>
+            </div>
+          </details>
+        </section>
         <div class="calculator-grid">
           <section class="panel inputs-panel" aria-labelledby="inputs-heading"><div class="panel-heading"><h2 id="inputs-heading">輸入條件</h2><span>修改後即時計算</span></div><form id="input-form" autocomplete="off"></form></section>
           <section class="panel results-panel" aria-labelledby="results-heading"><div class="panel-heading"><h2 id="results-heading">估算結果</h2><span id="result-status">即時計算</span></div><div id="results" aria-live="polite"></div></section>
@@ -70,7 +85,7 @@ header.tool-hero h1{font-size:25px!important}
       </main>
     </div>
   </div>
-  <script src="./app.js?v=11" defer></script>
+  <script src="./app.js?v=12" defer></script>
 </body>
 </html>
 

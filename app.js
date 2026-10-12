@@ -59,41 +59,42 @@ const tools = [
       ['電芯與壽命',['dcir','life','eolResistance','eolCapacity','mass','cp','initialTemp']],
       ['空調設計',['recovery','allowRise','otherHeat','available','margin']],
       ['有冷卻溫度曲線',['installedCooling','ambientTemp','thermalUA']]
-    ],validate:v=>v.voltageStart>=v.voltageEnd?'':'結束電壓須小於或等於起始電壓。',calc:v=>{
+    ],validate:v=>v.voltageStart>=v.voltageEnd?'':'結束電壓須小於或等於起始電壓。',calc:(v,load=activeLoadProfile)=>{
       const parallel=v.cellParallel*v.stringsPerGroup*v.groupsPerCabinet;
       const cellCount=v.series*parallel;
       const bankEnergy=cellCount*v.cellAh*v.cellNominalV/1000;
       const resistance=v.dcir/1000*(v.life==='eol'?v.eolResistance:1);
-      const powerW=v.power*1000;
-      const startCurrent=powerW/(parallel*v.voltageStart);
-      const endCurrent=powerW/(parallel*v.voltageEnd);
+      const powerAt=time=>load?interpolatePower(load,time):v.power;
+      const maxPower=load?Math.max(...load.map(row=>row.power)):v.power;
+      const startCurrent=powerAt(0)*1000/(parallel*v.voltageStart);
+      const endCurrent=powerAt(v.duration)*1000/(parallel*v.voltageEnd);
       const heatStart=cellCount*startCurrent*startCurrent*resistance;
       const heatEnd=cellCount*endCurrent*endCurrent*resistance;
-      // Match the visible spreadsheet formula: trapezoid of the start/end heat rates.
-      const heatAverage=(heatStart+heatEnd)/2;
-      const energy=heatAverage*v.duration*60;
       const heatCapacity=cellCount*v.mass*v.cp;
-      const recoveryLoad=energy/(v.recovery*3600);
-      const coolingFactor=(1+v.margin/100)/(v.available/100);
-      const recoveryNominal=(recoveryLoad+v.otherHeat)*coolingFactor;
-      const pulseLoad=Math.max(0,(energy-heatCapacity*v.allowRise)/(v.duration*60));
-      const pulseNominal=(pulseLoad+v.otherHeat)*coolingFactor;
       const usableEnergy=bankEnergy*(v.life==='eol'?v.eolCapacity/100:1);
       const stringCount=v.stringsPerGroup*v.groupsPerCabinet;
       const durationSeconds=v.duration*60;
       const usableCooling=Math.max(0,v.installedCooling*1000*v.available/100-v.otherHeat);
-      let cooledTemperature=v.initialTemp;
-      let removedEnergy=0;
+      const heatAt=time=>{
+        if(!load)return heatStart+(heatEnd-heatStart)*time/v.duration;
+        const voltage=v.voltageStart+(v.voltageEnd-v.voltageStart)*time/v.duration;
+        const current=powerAt(time)*1000/(parallel*voltage);
+        return cellCount*current*current*resistance;
+      };
+      let cooledTemperature=v.initialTemp,peakCooledTemperature=v.initialTemp;
+      let removedEnergy=0,energy=0,outputEnergy=0,peakHeat=0;
       const profile=Array.from({length:49},(_,index)=>{
         const fraction=index/48;
-        const seconds=durationSeconds*fraction;
-        const heat=heatStart+(heatEnd-heatStart)*fraction;
-        const joules=heatStart*seconds+(heatEnd-heatStart)*seconds*fraction/2;
+        const heat=heatAt(v.duration*fraction);
+        peakHeat=Math.max(peakHeat,heat);
         if(index){
           const dt=durationSeconds/(48*20);
           for(let substep=0;substep<20;substep++){
-            const midFraction=(index-1+(substep+.5)/20)/48;
-            const inputHeat=heatStart+(heatEnd-heatStart)*midFraction;
+            const midTime=v.duration*(index-1+(substep+.5)/20)/48;
+            const inputHeat=heatAt(midTime);
+            peakHeat=Math.max(peakHeat,inputHeat);
+            energy+=inputHeat*dt;
+            outputEnergy+=powerAt(midTime)*dt/3600;
             const potential=v.thermalUA*(cooledTemperature-v.ambientTemp);
             if(v.thermalUA>0&&potential<usableCooling){
               const decay=Math.exp(-v.thermalUA*dt/heatCapacity);
@@ -104,21 +105,31 @@ const tools = [
               cooledTemperature+=(inputHeat-usableCooling)*dt/heatCapacity;
               removedEnergy+=usableCooling*dt;
             }
+            peakCooledTemperature=Math.max(peakCooledTemperature,cooledTemperature);
           }
         }
-        return {time:v.duration*fraction,temperature:v.initialTemp+joules/heatCapacity,cooledTemperature,loss:heat/stringCount};
+        return {time:v.duration*fraction,temperature:v.initialTemp+energy/heatCapacity,cooledTemperature,loss:heat/stringCount};
       });
+      // Preserve the spreadsheet's exact endpoint trapezoid in fixed-power mode.
+      if(!load){energy=(heatStart+heatEnd)/2*durationSeconds;outputEnergy=v.power*v.duration/60;}
+      const heatAverage=energy/durationSeconds;
+      const recoveryLoad=energy/(v.recovery*3600);
+      const coolingFactor=(1+v.margin/100)/(v.available/100);
+      const recoveryNominal=(recoveryLoad+v.otherHeat)*coolingFactor;
+      const pulseLoad=Math.max(0,(energy-heatCapacity*v.allowRise)/durationSeconds);
+      const pulseNominal=(pulseLoad+v.otherHeat)*coolingFactor;
       const warnings=[];
       if(pulseNominal>recoveryNominal+0.01)warnings.push(`單靠 ${round(v.recovery,1)} 小時回冷冷量，不能保證放電期間的平均溫升不超過 ${round(v.allowRise,1)} °C；限溫情境至少需 ${round(pulseNominal/1000,2)} kW 標稱冷量。`);
-      if(v.power*v.duration/60>usableEnergy)warnings.push('輸出電量超過估算可用能量，請核對功率、時間、EOL 容量保留率及可用 SoC。');
-      if(profile.at(-1).cooledTemperature>v.initialTemp+v.allowRise)warnings.push(`已配置 ${round(v.installedCooling,2)} kW 標稱冷量的估算末溫為 ${round(profile.at(-1).cooledTemperature,1)} °C，超過設定的平均溫升限制。`);
+      if(outputEnergy>usableEnergy)warnings.push('輸出電量超過估算可用能量，請核對功率、時間、EOL 容量保留率及可用 SoC。');
+      if(peakCooledTemperature>v.initialTemp+v.allowRise)warnings.push(`已配置 ${round(v.installedCooling,2)} kW 標稱冷量的估算峰值平均溫度為 ${round(peakCooledTemperature,1)} °C，超過設定的平均溫升限制。`);
       return {results:[
         item('回冷情境空調標稱冷量',recoveryNominal/1000,'kW',true),
         item('同等空調冷量',recoveryNominal*3.412141633,'BTU/hr'),
         item('電池回冷平均熱負載',recoveryLoad/1000,'kW'),
         item('放電限溫情境標稱冷量',pulseNominal/1000,'kW'),
         item('計算所得放電總熱量',energy/1000,'kJ'),
-        item('起終點平均發熱',heatAverage/1000,'kW'),
+        item(load?'時間平均發熱':'起終點平均發熱',heatAverage/1000,'kW'),
+        ...(load?[item('整段峰值電芯發熱',peakHeat/1000,'kW'),item('負載輸出電量',outputEnergy,'kWh')]:[]),
         item('起始電芯發熱',heatStart/1000,'kW'),
         item('結束電芯發熱',heatEnd/1000,'kW'),
         item('起始每顆電芯電流',startCurrent,'A'),
@@ -129,8 +140,9 @@ const tools = [
         item('絕熱平均溫升',energy/heatCapacity,'°C'),
         item('無冷卻末端平均溫度',v.initialTemp+energy/heatCapacity,'°C'),
         item('有冷卻末端平均溫度',profile.at(-1).cooledTemperature,'°C'),
+        item('有冷卻峰值平均溫度',peakCooledTemperature,'°C'),
         item('放電期間由電芯移走的熱量',removedEnergy/1000,'kJ'),
-        item('額定放電倍率',v.power/bankEnergy,'C')
+        item(load?'峰值額定放電倍率':'額定放電倍率',maxPower/bankEnergy,'C')
       ],charts:{profile,temperatureLimit:v.initialTemp+v.allowRise,lossStart:heatStart/stringCount,lossEnd:heatEnd/stringCount},warning:warnings.join(' ')};
     },formula:'並聯路徑數 = P × 每組串數 × 每櫃組數；電芯數 = S × 並聯路徑數；單櫃額定能量[kWh] = 電芯數 × 單顆額定容量[Ah] × 單顆額定電壓[V] ÷ 1000；額定放電倍率[C] = 單櫃輸出功率[kW] ÷ 單櫃額定能量[kWh]；EOL 容量檢查值 = 額定能量 × EOL 容量保留率；單顆電流 I[A] = 單櫃輸出功率[kW] × 1000 ÷ (並聯路徑數 × 負載電壓[V])；有效電阻 R[Ω] = DCIR[mΩ] ÷ 1000 × 壽命倍率；起始與結束發熱 Q[W] = 電芯數 × I² × R；平均發熱 Q̄[W] = (起始發熱 + 結束發熱) ÷ 2；總熱量 E[kJ] = Q̄[W] × 放電時間[分鐘] × 60 ÷ 1000；每串損失[W] = 單櫃發熱[W] ÷ (每組串數 × 每櫃組數)；絕熱溫度 T(t) = 起始溫度 + [Q起始 × t + (Q結束 − Q起始) × t² ÷ (2 × 放電秒數)] ÷ (電芯數 × 重量 × 比熱)；有冷卻溫度 C × dT/dt = Q電芯 − min(空調可供電芯冷量, UA × (T − 冷卻介質溫度))；空調可供電芯冷量 = max(0, 已配置標稱冷量 × 可用比例 − 其他連續熱負載)；回冷平均負載[W] = E[kJ] × 1000 ÷ 回冷時間[秒]；回冷標稱冷量[W] = (回冷平均負載 + 其他熱負載) × (1 + 裕量比例) ÷ 可用冷量比例；放電限溫負載[W] = max(0, [E[J] − 電芯數 × 重量 × 比熱 × 容許溫升] ÷ 放電秒數) + 其他熱負載。標稱值同樣套用裕量與可用冷量比例。',caution:'額定能量由額定 Ah 與額定 V 推算，不代表這次放電能取出的電量；EOL 容量檢查值未扣除可用 SoC 窗口。橘線是無冷卻的平均溫度；有冷卻線採單一熱容與整櫃等效 UA，假設冷卻介質溫度及可用冷量固定，且其他連續負載優先占用空調冷量。UA 必須用量測或熱模型校準；無法從空調標稱冷量直接推知。損失曲線是假設兩端點發熱之間線性變化的 I²R 電池損失。照片所見 13,863.74 W、25,000 W、9 分鐘代入會得 10,493.2 kJ，與畫面顯示的 11,015.9 kJ 不同，請核對放電時間是否有隱藏小數或重新計算 Excel。回冷與放電限溫是不同情境；本估算不含可逆熱、極耳、匯流排、逆變器及機櫃進熱。平均溫度不代表最高芯溫。BTU/hr 是冷量，不是耗電功率。'
   },
@@ -179,6 +191,38 @@ const tools = [
 const byId = id => document.getElementById(id);
 const groups = [...new Set(tools.map(t=>t.group))];
 const state = Object.fromEntries(tools.map(t=>[t.id,Object.fromEntries(t.fields.map(f=>[f.key,f.value]))]));
+const loadProfileKey='battery-lab-load-profile-v1';
+const cellCardsKey='battery-lab-cell-cards-v1';
+const cellKeys=['cellAh','cellNominalV','dcir','mass','cp'];
+function validLoadProfile(rows){return Array.isArray(rows)&&rows.length>=2&&rows.length<=200&&rows.every((row,i)=>row&&typeof row.time==='number'&&typeof row.power==='number'&&Number.isFinite(row.time)&&Number.isFinite(row.power)&&row.time>=0&&row.time<=100000&&row.power>=0&&row.power<=1000000&&(i===0?row.time===0:row.time>rows[i-1].time))&&Math.max(...rows.map(row=>row.power))>=.001&&rows.at(-1).time>=.001;}
+function parseLoadProfile(text){
+  const lines=text.replace(/^\uFEFF/,'').split(/\r?\n/).map(line=>line.trim()).filter(Boolean);
+  if(lines[0]?.toLowerCase().replace(/\s/g,'')==='time_min,power_kw')lines.shift();
+  const rows=lines.map((line,index)=>{
+    const columns=line.split(',').map(value=>value.trim());
+    if(columns.length!==2||columns.some(value=>value===''||!Number.isFinite(Number(value))))throw Error(`第 ${index+1} 筆須為「時間,功率」兩個數值。`);
+    return {time:Number(columns[0]),power:Number(columns[1])};
+  });
+  if(!validLoadProfile(rows))throw Error('需有 2～200 筆資料；時間從 0 分鐘開始且嚴格遞增，功率不可為負，至少一筆功率須大於 0。');
+  return rows;
+}
+function interpolatePower(rows,time){
+  if(time<=0)return rows[0].power;
+  for(let i=1;i<rows.length;i++)if(time<=rows[i].time){
+    const before=rows[i-1],after=rows[i];
+    return before.power+(after.power-before.power)*(time-before.time)/(after.time-before.time);
+  }
+  return rows.at(-1).power;
+}
+function storedJson(key,fallback){try{return JSON.parse(localStorage.getItem(key)||'null')??fallback;}catch{return fallback;}}
+function persistJson(key,value){try{localStorage.setItem(key,JSON.stringify(value));}catch{/* Browser storage may be unavailable. */}}
+let activeLoadProfile=storedJson(loadProfileKey,null);
+if(!validLoadProfile(activeLoadProfile))activeLoadProfile=null;
+if(activeLoadProfile){state['hvac-sizing'].duration=activeLoadProfile.at(-1).time;state['hvac-sizing'].power=Math.max(...activeLoadProfile.map(row=>row.power));}
+function safeText(text){return String(text).replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));}
+function validCard(card){return card&&typeof card.name==='string'&&card.name.length>0&&card.name.length<=80&&typeof card.source==='string'&&card.source.length<=120&&Number.isFinite(card.soc)&&card.soc>=0&&card.soc<=100&&Number.isFinite(card.temp)&&card.temp>=-70&&card.temp<=150&&Number.isFinite(card.pulse)&&card.pulse>0&&card.pulse<=100000&&cellKeys.every(key=>Number.isFinite(card[key])&&card[key]>0);}
+let cellCards=storedJson(cellCardsKey,[]);
+cellCards=Array.isArray(cellCards)?cellCards.slice(0,20).filter(validCard):[];
 const finderGroups = [
   {name:'常用',ids:['hvac-sizing','heat','thermal','coolant']},
   {name:'發熱與溫度',ids:['heat','thermal']},
@@ -202,17 +246,19 @@ const searchAliases = {
 };
 let finderGroup='常用';
 let active = null;
-const scenarioKey='battery-lab-hvac-scenarios-v1';
+const scenarioKey='battery-lab-hvac-scenarios-v2';
 const hvacTool=tools.find(tool=>tool.id==='hvac-sizing');
 function validScenario(value){
   return value&&typeof value==='object'&&hvacTool.fields.every(field=>field.options?field.options.some(([option])=>option===value[field.key]):typeof value[field.key]==='number'&&Number.isFinite(value[field.key])&&value[field.key]>=field.min&&value[field.key]<=field.max&&(field.step!==1||Number.isInteger(value[field.key])));
 }
 function loadScenarios(){
-  try{const saved=JSON.parse(localStorage.getItem(scenarioKey)||'[]');return Array.isArray(saved)?saved.slice(0,3).filter(validScenario):[];}catch{return [];}
+  const saved=storedJson(scenarioKey,storedJson('battery-lab-hvac-scenarios-v1',[]));
+  if(!Array.isArray(saved))return [];
+  return saved.slice(0,3).map(entry=>entry?.values?entry:{values:entry,load:null}).filter(entry=>validScenario(entry.values)&&(!entry.load||validLoadProfile(entry.load))&&(!entry.load||entry.values.duration===entry.load.at(-1).time));
 }
 let scenarios=loadScenarios();
-function saveScenarios(){try{localStorage.setItem(scenarioKey,JSON.stringify(scenarios));}catch{/* Private browsing can deny storage. */}}
-function scenarioLabel(v){return `${v.life.toUpperCase()} · ${round(v.power,0)} kW / ${round(v.duration,1)} 分 · ${round(v.groupsPerCabinet,0)} 組/櫃 · 冷量 ${round(v.installedCooling,1)} kW`;}
+function saveScenarios(){persistJson(scenarioKey,scenarios);}
+function scenarioLabel(v,load=null){return `${v.life.toUpperCase()} · ${load?'時序峰值':'定功率'} ${round(v.power,0)} kW / ${round(v.duration,1)} 分 · ${round(v.groupsPerCabinet,0)} 組/櫃 · 冷量 ${round(v.installedCooling,1)} kW`;}
 
 function renderFinder(){
   const query=byId('tool-search').value.trim().toLocaleLowerCase();
@@ -228,14 +274,16 @@ function renderFinder(){
 }
 
 function renderMethod(tool){
-  const parts=tool.formula.split(/[；。]/).map(part=>part.trim()).filter(Boolean);
+  const formula=tool.id==='hvac-sizing'&&activeLoadProfile?tool.formula.replace('平均發熱 Q̄[W] = (起始發熱 + 結束發熱) ÷ 2；總熱量 E[kJ] = Q̄[W] × 放電時間[分鐘] × 60 ÷ 1000','時序發熱 Q(t)[W] = 電芯數 × [功率(t) × 1000 ÷ (並聯路徑數 × 電壓(t))]² × R；總熱量 E[kJ] = ∫ Q(t) dt ÷ 1000；平均發熱 Q̄[W] = E[J] ÷ 放電秒數'):tool.formula;
+  const parts=formula.split(/[；。]/).map(part=>part.trim()).filter(Boolean);
   const equations=parts.filter(part=>/[=≈]/.test(part));
   const notes=parts.filter(part=>!/[=≈]/.test(part));
   const rows=equations.map(part=>{
     const [,label,operator,expression]=part.match(/^(.+?)\s*([=≈])\s*(.+)$/);
     return `<div class="equation-row"><span class="equation-label">${label.trim()}</span><span class="equation-expression"><b>${operator}</b> ${expression}</span></div>`;
   }).join('');
-  byId('method').innerHTML=`<div class="method-layout"><div class="equations"><h3>計算公式</h3><div class="equation-list">${rows}</div>${notes.map(note=>`<p class="unit-note">${note}</p>`).join('')}</div><aside class="boundary"><h3>使用邊界</h3><p>${tool.caution}</p>${tool.source?`<p class="source">參考資料：<a href="${tool.source[1]}" target="_blank" rel="noopener noreferrer">${tool.source[0]}</a></p>`:''}</aside></div>`;
+  const dynamicNote=tool.id==='hvac-sizing'&&activeLoadProfile?'時序模式在相鄰輸入點之間線性插值功率，起始到結束電壓也依時間線性插值；不依 SoC 或電流回算電壓，亦不模擬保護截止。時序能量由積分求得，原試算表的端點梯形公式僅適用定功率模式。':'';
+  byId('method').innerHTML=`<div class="method-layout"><div class="equations"><h3>計算公式</h3><div class="equation-list">${rows}</div>${notes.map(note=>`<p class="unit-note">${note}</p>`).join('')}</div><aside class="boundary"><h3>使用邊界</h3><p>${tool.caution} ${dynamicNote}</p>${tool.source?`<p class="source">參考資料：<a href="${tool.source[1]}" target="_blank" rel="noopener noreferrer">${tool.source[0]}</a></p>`:''}</aside></div>`;
 }
 function renderField(tool,f){
   const eolOnly=tool.id==='hvac-sizing'&&['eolResistance','eolCapacity'].includes(f.key);
@@ -281,15 +329,71 @@ function renderCharts(charts){
   if(!charts){container.hidden=true;container.innerHTML='';return;}
   const {profile,temperatureLimit,lossStart,lossEnd}=charts;
   const end=profile.at(-1);
-  const comparisons=scenarios.map((values,index)=>({values,index,charts:hvacTool.calc(values).charts}));
+  const comparisons=scenarios.map(({values,load},index)=>({values,load,index,charts:hvacTool.calc(values,load).charts}));
   const temperatureLines=[{label:'目前：有冷卻',points:profile,key:'cooledTemperature',color:'#087c89'},
     {label:'目前：無冷卻',points:profile,key:'temperature',color:'#d57838',dashed:true},
     ...comparisons.map(({index,charts:old})=>({label:`情境 ${index+1}：有冷卻`,points:old.profile,key:'cooledTemperature',color:scenarioColors[index]}))];
   const lossLines=[{label:'目前',points:profile,key:'loss',color:'#087c89'},
     ...comparisons.map(({index,charts:old})=>({label:`情境 ${index+1}`,points:old.profile,key:'loss',color:scenarioColors[index]}))];
-  const rows=comparisons.map(({values,index,charts:old})=>`<div class="scenario-row"><span class="scenario-swatch" style="--line-color:${scenarioColors[index]}"></span><div><strong>情境 ${index+1}</strong><small>${scenarioLabel(values)}</small><span>有冷卻末溫 ${round(old.profile.at(-1).cooledTemperature,1)} °C · 每串末端 loss ${round(old.lossEnd/1000,2)} kW</span></div><button type="button" data-remove-scenario="${index}" aria-label="移除情境 ${index+1}">移除</button></div>`).join('');
+  const rows=comparisons.map(({values,load,index,charts:old})=>`<div class="scenario-row"><span class="scenario-swatch" style="--line-color:${scenarioColors[index]}"></span><div><strong>情境 ${index+1}</strong><small>${scenarioLabel(values,load)}</small><span>有冷卻末溫 ${round(old.profile.at(-1).cooledTemperature,1)} °C · 每串末端 loss ${round(old.lossEnd/1000,2)} kW</span></div><button type="button" data-remove-scenario="${index}" aria-label="移除情境 ${index+1}">移除</button></div>`).join('');
   container.hidden=false;
-  container.innerHTML=`<div class="chart-section-title"><h2>放電過程曲線與情境比較</h2><span>目前 ${round(end.time,2)} 分鐘</span></div><div class="scenario-controls"><p>調整上方條件後，按「儲存目前情境」即可與下一組參數比較；最多保留 3 組於此瀏覽器。</p><button type="button" data-save-scenario ${scenarios.length>=3?'disabled':''}>儲存目前情境</button></div><div class="scenario-list"><div class="scenario-row current"><span class="scenario-swatch" style="--line-color:#087c89"></span><div><strong>目前條件</strong><small>${scenarioLabel(state['hvac-sizing'])}</small><span>有冷卻末溫 ${round(end.cooledTemperature,1)} °C · 每串末端 loss ${round(lossEnd/1000,2)} kW</span></div></div>${rows}</div><div class="chart-grid"><article class="chart-card"><div class="chart-card-head"><h3>電芯平均溫度</h3><strong>有冷卻 ${round(end.cooledTemperature,1)} °C</strong></div>${chartLegend(temperatureLines)}<div class="chart-scroll">${lineChart(temperatureLines,{unit:'°C',limit:temperatureLimit})}</div><p>橘色虛線為目前條件的無冷卻溫度；橫向虛線為目前設定的平均溫度上限。比較情境若修改起始溫度或容許溫升，仍以目前上限作參考。</p></article><article class="chart-card"><div class="chart-card-head"><h3>每串功率損失</h3><strong>目前 ${round(lossEnd/1000,2)} kW</strong></div>${chartLegend(lossLines)}<div class="chart-scroll">${lineChart(lossLines,{unit:'W',zeroBase:true})}</div><p>目前起始 ${round(lossStart/1000,2)} kW → 結束 ${round(lossEnd/1000,2)} kW。不同配置的每串定義會依各情境的串數計算。</p></article></div>`;
+  container.innerHTML=`<div class="chart-section-title"><h2>放電過程曲線與情境比較</h2><span>目前 ${round(end.time,2)} 分鐘</span></div><div class="scenario-controls"><p>調整上方條件後，按「儲存目前情境」即可與下一組參數比較；最多保留 3 組於此瀏覽器。</p><button type="button" data-save-scenario ${scenarios.length>=3?'disabled':''}>儲存目前情境</button></div><div class="scenario-list"><div class="scenario-row current"><span class="scenario-swatch" style="--line-color:#087c89"></span><div><strong>目前條件</strong><small>${scenarioLabel(state['hvac-sizing'],activeLoadProfile)}</small><span>有冷卻末溫 ${round(end.cooledTemperature,1)} °C · 每串末端 loss ${round(lossEnd/1000,2)} kW</span></div></div>${rows}</div><div class="chart-grid"><article class="chart-card"><div class="chart-card-head"><h3>電芯平均溫度</h3><strong>有冷卻 ${round(end.cooledTemperature,1)} °C</strong></div>${chartLegend(temperatureLines)}<div class="chart-scroll">${lineChart(temperatureLines,{unit:'°C',limit:temperatureLimit})}</div><p>橘色虛線為目前條件的無冷卻溫度；橫向虛線為目前設定的平均溫度上限。比較情境若修改起始溫度或容許溫升，仍以目前上限作參考。</p></article><article class="chart-card"><div class="chart-card-head"><h3>每串功率損失</h3><strong>目前 ${round(lossEnd/1000,2)} kW</strong></div>${chartLegend(lossLines)}<div class="chart-scroll">${lineChart(lossLines,{unit:'W',zeroBase:true})}</div><p>目前起始 ${round(lossStart/1000,2)} kW → 結束 ${round(lossEnd/1000,2)} kW。不同配置的每串定義會依各情境的串數計算。</p></article></div>`;
+}
+function renderCellCards(){
+  byId('cell-count').textContent=`${cellCards.length} 張`;
+  byId('cell-list').innerHTML=cellCards.length?cellCards.map((card,index)=>`<div class="cell-card"><div><strong>${safeText(card.name)}</strong><small>${safeText(card.source||'未填來源')} · DCIR ${round(card.dcir,3)} mΩ @ ${round(card.soc,0)}% SoC、${round(card.temp,1)} °C、${round(card.pulse,1)} s</small><span>${round(card.cellAh,2)} Ah · ${round(card.cellNominalV,2)} V · ${round(card.mass,3)} kg · cp ${round(card.cp,0)} J/(kg·K)</span></div><button type="button" data-apply-cell="${index}">套用</button><button type="button" data-delete-cell="${index}" class="secondary">刪除</button></div>`).join(''):'<p class="workflow-empty">尚無資料卡。先填好上方電芯數值，再儲存目前電芯。</p>';
+}
+function renderWorkflow(){
+  byId('workflow-panel').hidden=active.id!=='hvac-sizing';
+  if(active.id!=='hvac-sizing')return;
+  byId('profile-badge').textContent=activeLoadProfile?`${activeLoadProfile.length} 點 · ${round(activeLoadProfile.at(-1).time,1)} 分鐘`:'定功率模式';
+  byId('profile-status').textContent=activeLoadProfile?`已套用 ${activeLoadProfile.length} 點時序；負載功率在相鄰時間點間線性變化。`:'目前使用定功率放電。';
+  for(const key of ['power','duration'])byId('input-form').elements.namedItem(key).readOnly=!!activeLoadProfile;
+  renderCellCards();
+}
+function makeWorkflow(){
+  byId('profile-file').addEventListener('change',async event=>{
+    const file=event.target.files?.[0];
+    if(!file)return;
+    if(file.size>65536){byId('profile-status').textContent='檔案過大；最多 64 KB、200 筆資料。';return;}
+    byId('profile-text').value=await file.text();
+    byId('profile-status').textContent='檔案已載入；按「套用時序」開始計算。';
+  });
+  byId('apply-profile').addEventListener('click',()=>{
+    try{
+      const rows=parseLoadProfile(byId('profile-text').value);
+      activeLoadProfile=rows;
+      persistJson(loadProfileKey,rows);
+      const form=byId('input-form');
+      form.elements.namedItem('duration').value=rows.at(-1).time;
+      form.elements.namedItem('power').value=Math.max(...rows.map(row=>row.power));
+      update();renderWorkflow();renderMethod(active);
+    }catch(error){byId('profile-status').textContent=error.message;}
+  });
+  byId('clear-profile').addEventListener('click',()=>{
+    activeLoadProfile=null;persistJson(loadProfileKey,null);byId('profile-file').value='';
+    renderWorkflow();update();renderMethod(active);
+  });
+  byId('save-cell').addEventListener('click',()=>{
+    if(!byId('input-form').checkValidity()){byId('cell-status').textContent='請先修正上方電芯輸入值。';return;}
+    const name=byId('cell-name').value.trim(),source=byId('cell-source').value.trim();
+    const card={name,source,soc:Number(byId('cell-soc').value),temp:Number(byId('cell-temp').value),pulse:Number(byId('cell-pulse').value)};
+    for(const key of cellKeys)card[key]=state['hvac-sizing'][key];
+    if(!name||['cell-soc','cell-temp','cell-pulse'].some(id=>!byId(id).value||!byId(id).validity.valid)||!validCard(card)){
+      byId('cell-status').textContent='請填寫電芯名稱及有效的 DCIR 量測條件，並確認上方電芯數值。';return;
+    }
+    if(cellCards.length>=20){byId('cell-status').textContent='最多保留 20 張資料卡；請先刪除不需要的資料卡。';return;}
+    cellCards.push(card);persistJson(cellCardsKey,cellCards);renderCellCards();byId('cell-status').textContent=`已儲存「${name}」。`;
+  });
+  byId('cell-list').addEventListener('click',event=>{
+    const apply=event.target.closest('[data-apply-cell]'),remove=event.target.closest('[data-delete-cell]');
+    if(apply){
+      const card=cellCards[Number(apply.dataset.applyCell)];
+      for(const key of cellKeys)byId('input-form').elements.namedItem(key).value=card[key];
+      update();byId('cell-status').textContent=`已套用「${card.name}」的電芯參數；請確認目前操作 SoC、溫度與脈衝時間是否適用其 DCIR。`;
+    }
+    if(remove){cellCards.splice(Number(remove.dataset.deleteCell),1);persistJson(cellCardsKey,cellCards);renderCellCards();byId('cell-status').textContent='已刪除資料卡。';}
+  });
 }
 
 function makeNav(){
@@ -300,10 +404,11 @@ function makeNav(){
   byId('finder-filters').addEventListener('click',e=>{const button=e.target.closest('[data-finder-group]');if(!button)return;finderGroup=button.dataset.finderGroup;renderFinder()});
   byId('input-form').addEventListener('input',update);
   byId('input-form').addEventListener('change',update);
+  makeWorkflow();
   byId('charts').addEventListener('click',event=>{
     if(active.id!=='hvac-sizing')return;
     if(event.target.closest('[data-save-scenario]')){
-      if(scenarios.length<3){scenarios.push({...state['hvac-sizing']});saveScenarios();update();}
+      if(scenarios.length<3){scenarios.push({values:{...state['hvac-sizing']},load:activeLoadProfile?activeLoadProfile.map(row=>({...row})):null});saveScenarios();update();}
       return;
     }
     const remove=event.target.closest('[data-remove-scenario]');
@@ -316,6 +421,7 @@ function render(){
   document.querySelectorAll('.nav-button').forEach(button=>{let selected=button.dataset.tool===tool.id;button.classList.toggle('active',selected);if(selected)button.setAttribute('aria-current','page');else button.removeAttribute('aria-current')});
   renderFinder();
   byId('input-form').innerHTML=renderFields(tool);
+  renderWorkflow();
   renderMethod(tool);
   update();
 }
