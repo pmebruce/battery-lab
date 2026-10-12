@@ -2,7 +2,7 @@
 const n = (label, key, value, unit, min = 0, max = 1000000, step = 'any', hint = '') => ({label,key,value,unit,min,max,step,hint});
 const select = (label,key,value,options) => ({label,key,value,options});
 const item = (label,value,unit='',primary=false) => ({label,value,unit,primary});
-const round = (value, digits=2) => Number(value).toLocaleString('zh-TW',{maximumFractionDigits:digits,minimumFractionDigits:digits});
+const round = (value, digits=2) => (Object.is(value,-0)?0:Number(value)).toLocaleString('zh-TW',{maximumFractionDigits:digits,minimumFractionDigits:digits});
 const tools = [
   {
     id:'heat',group:'熱管理',title:'電芯發熱量',description:'以電流與 DCIR 估算不可逆熱，可選填熵熱係數評估可逆熱。',fields:[
@@ -12,7 +12,7 @@ const tools = [
       n('熵熱係數 dOCV/dT','entropy',0,'mV/K',-10,10,'any','未知時填 0，表示暫時忽略可逆熱'),
       n('電芯數量','count',96,'顆',1,1000000,1)
     ],calc:v=>{
-      const qi=v.I*v.I*v.R/1000, qr=-v.I*(v.T+273.15)*v.entropy/1000, qt=qi+qr;
+      const qi=v.I*v.I*v.R/1000, qr=v.entropy===0?0:-v.I*(v.T+273.15)*v.entropy/1000, qt=qi+qr;
       return {results:[item('單顆總發熱',qt,'W',true),item('不可逆熱 I²R',qi,'W'),item('可逆熵熱',qr,'W'),item('全部電芯總發熱',qt*v.count,'W')],warning:qt<0?'此操作點的估算為淨吸熱；請確認熵熱係數符號與電流方向。':undefined};
     },formula:'Q不可逆 = I² × DCIR；Q可逆 = −I × (T°C + 273.15) × dOCV/dT；Q總 = Q不可逆 + Q可逆。DCIR、熵熱係數分別由 mΩ、mV/K 換算為 Ω、V/K。',caution:'I 定義為放電正、充電負。DCIR 隨 SoC、溫度、脈衝時間與老化改變；熵熱係數也依 SoC 改變。此處是指定操作點的瞬時估算，不含極耳、匯流排與其他系統損失。'
   },
@@ -200,7 +200,8 @@ function renderMethod(tool){
   byId('method').innerHTML=`<div class="method-layout"><div class="equations"><h3>計算公式</h3><div class="equation-list">${rows}</div>${notes.map(note=>`<p class="unit-note">${note}</p>`).join('')}</div><aside class="boundary"><h3>使用邊界</h3><p>${tool.caution}</p>${tool.source?`<p class="source">參考資料：<a href="${tool.source[1]}" target="_blank" rel="noopener noreferrer">${tool.source[0]}</a></p>`:''}</aside></div>`;
 }
 function renderField(tool,f){
-  return `<div class="field"><label for="field-${f.key}">${f.label}</label><div class="field-control">${f.options?`<select id="field-${f.key}" name="${f.key}">${f.options.map(([value,label])=>`<option value="${value}" ${state[tool.id][f.key]===value?'selected':''}>${label}</option>`).join('')}</select>`:`<input id="field-${f.key}" name="${f.key}" type="number" inputmode="decimal" value="${state[tool.id][f.key]}" min="${f.min}" max="${f.max}" step="${f.step}" required><span class="unit">${f.unit}</span>`}</div>${f.hint?`<small>${f.hint}</small>`:''}</div>`;
+  const eolOnly=tool.id==='hvac-sizing'&&['eolResistance','eolCapacity'].includes(f.key);
+  return `<div class="field"${eolOnly?` data-eol-only ${state[tool.id].life==='eol'?'':'hidden'}`:''}><label for="field-${f.key}">${f.label}</label><div class="field-control">${f.options?`<select id="field-${f.key}" name="${f.key}">${f.options.map(([value,label])=>`<option value="${value}" ${state[tool.id][f.key]===value?'selected':''}>${label}</option>`).join('')}</select>`:`<input id="field-${f.key}" name="${f.key}" type="number" inputmode="decimal" value="${state[tool.id][f.key]}" min="${f.min}" max="${f.max}" step="${f.step}" required><span class="unit">${f.unit}</span>`}</div>${f.hint?`<small>${f.hint}</small>`:''}</div>`;
 }
 function renderFields(tool){
   if(!tool.sections)return `<div class="field-grid">${tool.fields.map(f=>renderField(tool,f)).join('')}</div>`;
@@ -258,6 +259,7 @@ function render(){
 }
 function update(){
   const form=byId('input-form'),v={};
+  if(active.id==='hvac-sizing')form.querySelectorAll('[data-eol-only]').forEach(el=>{el.hidden=form.elements.namedItem('life').value!=='eol'});
   renderCharts(null);
   for(const field of active.fields){
     const el=form.elements.namedItem(field.key);
@@ -274,8 +276,9 @@ function update(){
   const {results,warning,charts}=active.calc(v);
   if(results.some(x=>!Number.isFinite(x.value))){byId('result-status').textContent='無法計算';byId('results').innerHTML='<p class="error">結果超出計算範圍，請調整輸入值。</p>';return;}
   byId('result-status').textContent='即時計算';
-  byId('results').innerHTML=results.map(r=>`<div class="${r.primary?'result-primary':'result-row'}"><div class="result-label">${r.label}</div><div class="result-value">${round(r.value,Math.abs(r.value)<0.01&&r.value!==0?5:2)} <span class="result-unit">${r.unit}</span></div></div>`).join('')+(warning?`<p class="result-warning">${warning}</p>`:'');
+  byId('results').innerHTML=results.map(r=>`<div class="${r.primary?'result-primary':'result-row'}"><div class="result-label">${r.label}</div><div class="result-value">${round(r.value,r.unit==='顆'?0:Math.abs(r.value)<0.01&&r.value!==0?5:2)} <span class="result-unit">${r.unit}</span></div></div>`).join('')+(warning?`<p class="result-warning">${warning}</p>`:'');
   renderCharts(charts);
 }
 makeNav();window.addEventListener('hashchange',render);render();
 if('serviceWorker' in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
+
