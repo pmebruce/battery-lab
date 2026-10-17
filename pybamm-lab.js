@@ -1,3 +1,7 @@
+export const CELL_REFERENCES={
+ Chen2020:{name:'LG M50',format:'21700 圓柱電芯',chemistry:'NMC811 正極／石墨–SiOₓ 負極',source:'Chen 等人，2020',doi:'https://doi.org/10.1149/1945-7111/ab9050',csv:'LG M50 21700',note:'以 LG M50 5 Ah 電芯量測建立的參數集；本頁未針對你的電芯重新擬合，且 Chen2020 的熵熱係數預設為零。'},
+ Marquis2019:{name:'Kokam SLPB78205130H 文獻模型',format:'軟包電芯文獻參數來源',chemistry:'鈷酸鋰 LCO 正極／石墨負極',source:'Marquis 等人，2019 及其引用文獻',doi:'https://doi.org/10.1149/2.0341915jes',csv:'Kokam SLPB78205130H literature model',note:'來源電芯名稱依 PyBaMM 官方文件標示。此處容量是目前載入模型的設定，不是該型號實品的額定容量，也不代表完整重現該商用電芯。'}
+};
 export const COLUMNS=['time_s','current_a','voltage_v','temperature_c','heat_w','ohmic_w','reaction_w','reversible_w','volume_m3','heat_w_m3'];
 export function validateResult(r){
  if(!r||r.schema!=='battery-lab-pybamm-v1'||!r.config||!['SPM','SPMe'].includes(r.config.model)||!['Chen2020','Marquis2019'].includes(r.config.parameters)||!Number.isFinite(r.cell_volume_m3)||r.cell_volume_m3<=0||!Number.isFinite(r.cell_capacity_ah)||r.cell_capacity_ah<=0||typeof r.termination!=='string'||typeof r.entropy_note!=='string'||JSON.stringify(r.columns)!==JSON.stringify(COLUMNS)||!Array.isArray(r.rows)||r.rows.length<2||r.rows.length>10000)throw new Error('請匯入本頁求解腳本產生的有效 PyBaMM JSON。');
@@ -13,8 +17,8 @@ export function summarize(r){
 }
 export function exportCFD(r,count,volume){
  validateResult(r);if(!Number.isInteger(count)||count<1||count>1e6||!Number.isFinite(volume)||volume<=0)throw new Error('電芯數需為 1–1000000 的整數，CFD 物件總體積需大於 0。');
- const header=['time_s','current_per_cell_a','voltage_per_cell_v','temperature_c','heat_per_cell_w','heat_total_w','source_volume_m3','source_w_m3','ohmic_total_w','reaction_total_w','reversible_total_w'];
- return header.join(',')+'\r\n'+r.rows.map(v=>[v[0],v[1],v[2],v[3],v[4],v[4]*count,volume,v[4]*count/volume,v[5]*count,v[6]*count,v[7]*count].join(',')).join('\r\n');
+ const header=['time_s','current_per_cell_a','voltage_per_cell_v','temperature_c','heat_per_cell_w','heat_total_w','source_volume_m3','source_w_m3','ohmic_total_w','reaction_total_w','reversible_total_w','parameter_set','reference_cell','electrochemical_model','crate_c','model_capacity_ah'];
+ return header.join(',')+'\r\n'+r.rows.map(v=>[v[0],v[1],v[2],v[3],v[4],v[4]*count,volume,v[4]*count/volume,v[5]*count,v[6]*count,v[7]*count,r.config.parameters,CELL_REFERENCES[r.config.parameters].csv,r.config.model,r.config.crate,r.cell_capacity_ah].join(',')).join('\r\n');
 }
 export function chart(series,key,unit){
  const vals=series.flatMap(s=>s.result.rows.map(r=>r[key])),xmin=0,xmax=Math.max(...series.map(s=>s.result.rows.at(-1)[0]))||1;
@@ -27,12 +31,13 @@ export function chart(series,key,unit){
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 async function init(){
  const $=id=>document.getElementById(id);let cases=[],runner='',current,comparison;
- const label=r=>`${r.config.parameters} · ${r.config.model} · ${r.config.crate}C`;
+ const label=r=>`${CELL_REFERENCES[r.config.parameters].name} · ${r.cell_capacity_ah.toFixed(3)} Ah 模型 · ${r.config.model} · ${r.config.crate}C`;
  const download=(text,name,type)=>{const url=URL.createObjectURL(new Blob([text],{type})),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
  function render(resetVolume=false){
   current=cases[Number($('scenario').value)||0];comparison=$('comparison').value===''?null:cases[Number($('comparison').value)];
   if(resetVolume)$('volume').value=(current.cell_volume_m3*Number($('count').value)*1e6).toFixed(6);
   const summary=summarize(current),count=Number($('count').value);
+  $('cell-reference').innerHTML=[{r:current,title:'主要情境'},...(comparison?[{r:comparison,title:'比較情境'}]:[])].map(({r,title})=>{const ref=CELL_REFERENCES[r.config.parameters];return `<article class="cell-reference-card"><span class="cell-reference-tag">${title} · ${esc(r.config.parameters)}</span><h3>${ref.name}</h3><dl><div><dt>電芯形式／來源</dt><dd>${ref.format}</dd></div><div><dt>化學體系</dt><dd>${ref.chemistry}</dd></div><div><dt>本次模型容量</dt><dd><strong>${r.cell_capacity_ah.toFixed(3)} Ah</strong></dd></div><div><dt>模型與倍率</dt><dd>${esc(r.config.model)} · ${esc(r.config.crate)}C</dd></div><div><dt>文獻來源</dt><dd><a href="${ref.doi}" target="_blank" rel="noopener">${ref.source} ↗</a></dd></div></dl><p>${ref.note}</p></article>`;}).join('');
   $('metrics').innerHTML=[['單顆平均發熱',summary.mean.toFixed(4),'W'],['單顆取樣峰值發熱',summary.peak.toFixed(4),'W'],['單顆累積熱量',(summary.energy/1000).toFixed(3),'kJ'],['最高平均電芯溫度',summary.temperature.toFixed(2),'°C'],['參數集電芯容量',current.cell_capacity_ah.toFixed(3),'Ah'],['模擬結束時間',(summary.end/60).toFixed(2),'min']].map(([a,b,c])=>`<div><dt>${a}</dt><dd>${b}<small>${c}</small></dd></div>`).join('');
   $('model-note').textContent=`${current.config.parameters} 的示例電芯，h = ${current.config.htc} W/(m²·K)，環境 ${current.config.temperature_c} °C，起始 SoC ${current.config.initial_soc*100}%。模型體積 ${(current.cell_volume_m3*1e6).toFixed(3)} cm³、散熱面積 ${(current.cooling_area_m2??0).toFixed(5)} m²。結束原因：${current.termination}。`;
   $('entropy-note').textContent=current.config.parameters==='Chen2020'?'此 Chen2020 參數集的熵熱係數預設為零，圖中的可逆熱為零；不能據此判定你的電芯沒有熵熱。':'此 Marquis2019 參數集含隨 SoC 變化的電極熵熱係數；符號及數值依此參數集。';
@@ -52,8 +57,10 @@ async function init(){
  fetch('./pybamm-runner.py').then(r=>{if(!r.ok)throw Error('求解腳本無法載入');return r.text();}).then(text=>{runner=text;$('runner').disabled=false;}).catch(e=>$('runner-status').textContent=e.message);
  $('scenario').addEventListener('change',()=>render(true));$('comparison').addEventListener('change',()=>render());$('count').addEventListener('input',()=>render(true));$('volume').addEventListener('input',()=>render());
  $('cfd').addEventListener('click',()=>{try{download('\uFEFF'+exportCFD(current,Number($('count').value),Number($('volume').value)*1e-6),'pybamm-cfd-heat.csv','text/csv;charset=utf-8');$('export-status').textContent='已匯出指定電芯數與總體積的 CFD 熱源。';}catch(e){$('export-status').textContent=e.message;}});
- $('json').addEventListener('click',()=>download(JSON.stringify(current,null,2),'pybamm-result.json','application/json'));
+ $('json').addEventListener('click',()=>download(JSON.stringify({...current,cell_reference:CELL_REFERENCES[current.config.parameters]},null,2),'pybamm-result.json','application/json'));
  $('import').addEventListener('change',async e=>{try{const file=e.target.files[0];if(!file)return;if(file.size>20e6)throw Error('檔案需小於 20 MB');const result=validateResult(JSON.parse(await file.text()));result.imported=true;cases.push(result);setOptions();$('scenario').value=String(cases.length-1);render(true);$('status').textContent='已載入本機求解結果。';}catch(error){$('status').textContent=error.message;}});
+ function renderParameterNote(){const ref=CELL_REFERENCES[$('parameters').value];$('runner-cell-note').textContent=ref.name+' · '+ref.chemistry+'。'+ref.note;}
+ renderParameterNote();$('parameters').addEventListener('change',renderParameterNote);
  $('runner').addEventListener('click',()=>{try{
   for(const id of ['crate','ambient','soc','htc','duration'])if(!$(id).value.trim())throw Error('請填入完整的自訂求解條件。');
   const config={model:$('model').value,parameters:$('parameters').value,crate:Number($('crate').value),temperature_c:Number($('ambient').value),initial_soc:Number($('soc').value)/100,htc:Number($('htc').value),duration_s:Number($('duration').value)*60};
