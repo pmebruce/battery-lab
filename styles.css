@@ -207,3 +207,5 @@ footer{font-size:.96rem}
 @media(max-width:1100px){.workflow-panel{grid-template-columns:1fr}}
 @media(max-width:600px){.workflow-panel summary span{float:none;display:inline-block;margin-left:8px}.cell-card-fields{grid-template-columns:1fr}.cell-card{flex-wrap:wrap}.cell-card>div{flex-basis:100%}}
 
+
+.pybamm-link a{display:block;padding:18px 22px;background:#123e50;color:white;border-radius:12px;font-size:21px;font-weight:700;text-decoration:none;margin-bottom:24px}
