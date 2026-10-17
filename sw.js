@@ -6,13 +6,14 @@ self.addEventListener('fetch', event => {
   const request=event.request;
   if(request.method!=='GET'||new URL(request.url).origin!==self.location.origin)return;
   if(request.mode==='navigate'){
+    const documentKey=new URL(request.url).pathname.endsWith('/pybamm.html')?'./pybamm.html':'./index.html';
     event.respondWith(fetch(request).then(response=>{
       if(response.ok){
         const copy=response.clone();
-        event.waitUntil(caches.open(CACHE).then(cache=>cache.put('./index.html',copy)));
+        event.waitUntil(caches.open(CACHE).then(cache=>cache.put(documentKey,copy)));
       }
       return response;
-    }).catch(()=>caches.match('./index.html')));
+    }).catch(()=>caches.match(documentKey)));
     return;
   }
   event.respondWith(caches.match(request).then(hit=>hit||fetch(request)));

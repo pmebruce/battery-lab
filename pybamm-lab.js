@@ -55,6 +55,7 @@ async function init(){
  $('json').addEventListener('click',()=>download(JSON.stringify(current,null,2),'pybamm-result.json','application/json'));
  $('import').addEventListener('change',async e=>{try{const file=e.target.files[0];if(!file)return;if(file.size>20e6)throw Error('檔案需小於 20 MB');const result=validateResult(JSON.parse(await file.text()));result.imported=true;cases.push(result);setOptions();$('scenario').value=String(cases.length-1);render(true);$('status').textContent='已載入本機求解結果。';}catch(error){$('status').textContent=error.message;}});
  $('runner').addEventListener('click',()=>{try{
+  for(const id of ['crate','ambient','soc','htc','duration'])if(!$(id).value.trim())throw Error('請填入完整的自訂求解條件。');
   const config={model:$('model').value,parameters:$('parameters').value,crate:Number($('crate').value),temperature_c:Number($('ambient').value),initial_soc:Number($('soc').value)/100,htc:Number($('htc').value),duration_s:Number($('duration').value)*60};
   for(const [key,lo,hi] of [['crate',.1,3],['temperature_c',0,60],['initial_soc',.1,1],['htc',0,200],['duration_s',10,86400]])if(!Number.isFinite(config[key])||config[key]<lo||config[key]>hi)throw Error('請檢查 '+key+' 的範圍。');
   const code=runner.replace(/^DEFAULT_CONFIG = .*$/m,'DEFAULT_CONFIG = '+JSON.stringify(config));download(code,'battery-pybamm.py','text/x-python');$('runner-status').textContent='腳本已包含上方條件；在已安裝 PyBaMM 的電腦執行後，將 JSON 匯回此頁。';
